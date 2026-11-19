@@ -5,20 +5,38 @@ ROOT = pathlib.Path.cwd()
 STATE = ROOT / '.workflow' / 'state.json'
 TASKS = ROOT / 'tasks'
 STATUSES = {'DRAFT','READY','IMPLEMENTING','VALIDATING','CAPTAIN_REVIEW','COMMITTING','COMPLETED','BLOCKED'}
-ALLOWED = {'DRAFT':{'READY'}, 'READY':{'IMPLEMENTING','DRAFT'}, 'IMPLEMENTING':{'VALIDATING','BLOCKED'}, 'VALIDATING':{'IMPLEMENTING','CAPTAIN_REVIEW','BLOCKED'}, 'CAPTAIN_REVIEW':{'IMPLEMENTING','COMMITTING','BLOCKED'}, 'COMMITTING':{'COMPLETED','BLOCKED'}, 'BLOCKED':{'IMPLEMENTING','VALIDATING','CAPTAIN_REVIEW'}, 'COMPLETED':set()}
+ALLOWED = {'DRAFT':{'READY'}, 'READY':{'IMPLEMENTING','DRAFT'}, 'IMPLEMENTING':{'VALIDATING','CAPTAIN_REVIEW','BLOCKED'}, 'VALIDATING':{'IMPLEMENTING','CAPTAIN_REVIEW','BLOCKED'}, 'CAPTAIN_REVIEW':{'IMPLEMENTING','COMMITTING','BLOCKED'}, 'COMMITTING':{'COMPLETED','BLOCKED'}, 'BLOCKED':{'IMPLEMENTING','VALIDATING','CAPTAIN_REVIEW'}, 'COMPLETED':set()}
 def load():
     return json.loads(STATE.read_text()) if STATE.exists() else {'tasks':{},'active_task':None}
 def save(s):
     STATE.parent.mkdir(parents=True,exist_ok=True)
     tmp=STATE.with_suffix('.tmp'); tmp.write_text(json.dumps(s,indent=2)+'\n'); tmp.replace(STATE)
-def taskfile(t): return TASKS / (t+'.md')
+def slugify(title):
+    slug = re.sub(r'[^a-z0-9]+', '-', title.lower()).strip('-')
+    return (slug[:60].rstrip('-') or 'untitled')
+def taskfile(t, state=None):
+    state = state or load()
+    entry = state['tasks'].get(t, {})
+    recorded = entry.get('file')
+    if recorded:
+        path = ROOT / recorded
+        if path.resolve().parent != TASKS.resolve():
+            sys.exit('Invalid task path in registry')
+        return path
+    legacy = TASKS / (t + '.md')
+    if legacy.exists(): return legacy
+    matches = sorted(TASKS.glob(t + '-*.md'))
+    if len(matches) == 1: return matches[0]
+    if len(matches) > 1: sys.exit('Ambiguous task files: ' + t)
+    return legacy
+
 def init(args):
     TASKS.mkdir(exist_ok=True); STATE.parent.mkdir(exist_ok=True); save(load()); print('Initialized workflow registry')
 def new(args):
     s=load(); n=max([int(k.split('-')[1]) for k in s['tasks'] if re.fullmatch(r'task-\d+',k)] or [0])+1
-    t=f'task-{n:03d}'; s['tasks'][t]={'title':args.title,'status':'DRAFT','dependencies':[],'related':[],'attempts':{'developer':0,'tester':0},'validation_round':0,'sessions':{},'events':[]}
+    t=f'task-{n:03d}'; filename=f'{t}-{slugify(args.title)}.md'; s['tasks'][t]={'file':f'tasks/{filename}','mode':None,'title':args.title,'status':'DRAFT','dependencies':[],'related':[],'attempts':{'developer':0,'tester':0},'validation_round':0,'sessions':{},'events':[]}
     TASKS.mkdir(exist_ok=True); template=(ROOT/'.workflow'/'task-template.md').read_text()
-    taskfile(t).write_text(template.replace('{{TASK_ID}}',t).replace('{{TITLE}}',args.title).replace('{{DATE}}',datetime.date.today().isoformat()))
+    taskfile(t,s).write_text(template.replace('{{TASK_ID}}',t).replace('{{TITLE}}',args.title).replace('{{DATE}}',datetime.date.today().isoformat()))
     save(s); print(t)
 def status(args):
     s=load()
@@ -32,11 +50,29 @@ def transition(args):
     if new not in ALLOWED[old]: sys.exit(f'Invalid transition: {old} -> {new}')
     if new in {'IMPLEMENTING','VALIDATING','CAPTAIN_REVIEW','COMMITTING'} and s['active_task'] not in (None,t): sys.exit('Another task is active')
     if new=='IMPLEMENTING' and old=='READY' and not args.approved: sys.exit('Requires --approved: user approved specification')
+    if new=='IMPLEMENTING' and old=='READY' and d.get('mode') not in ('light','full'): sys.exit('Select approved mode first: workflow.py mode TASK light|full')
     if new=='COMMITTING' and not args.captain_approved: sys.exit('Requires --captain-approved: Captain reviewed implementation')
+    if new=='CAPTAIN_REVIEW' and old=='IMPLEMENTING' and d.get('mode')!='light': sys.exit('Only light mode can skip independent validation')
     if new in {'IMPLEMENTING','VALIDATING','CAPTAIN_REVIEW','COMMITTING'}: s['active_task']=t
     if new=='COMPLETED': s['active_task']=None
     d['status']=new; d['events'].append({'at':datetime.datetime.now(datetime.timezone.utc).isoformat(),'from':old,'to':new,'note':args.note or ''})
     save(s); print(f'{t}: {old} -> {new}')
+def mode(args):
+    s=load(); d=s['tasks'].get(args.task)
+    if not d: sys.exit('Unknown task')
+    if d['status'] not in ('DRAFT','READY'): sys.exit('Cannot change mode after implementation begins')
+    d['mode']=args.mode
+    save(s); print(f'{args.task}: mode={args.mode} (user must approve in task spec)')
+def path(args):
+    s=load()
+    if args.task not in s['tasks']: sys.exit('Unknown task')
+    print(taskfile(args.task,s))
+def scratch(args):
+    s=load()
+    if args.task not in s['tasks']: sys.exit('Unknown task')
+    d=ROOT/'.workflow'/'runs'/args.task
+    d.mkdir(parents=True,exist_ok=True)
+    print(d.resolve())
 def attempt(args):
     s=load(); d=s['tasks'][args.task]; n=d['attempts'][args.role]+1
     if n>3: sys.exit('Recovery exhausted: BLOCK and escalate to user; do not retry')
@@ -73,6 +109,9 @@ def main():
     a=sub.add_parser('new'); a.add_argument('title'); a.set_defaults(fn=new)
     a=sub.add_parser('status'); a.add_argument('task',nargs='?'); a.set_defaults(fn=status)
     a=sub.add_parser('transition'); a.add_argument('task'); a.add_argument('to',choices=sorted(STATUSES)); a.add_argument('--approved',action='store_true'); a.add_argument('--captain-approved',action='store_true'); a.add_argument('--note'); a.set_defaults(fn=transition)
+    a=sub.add_parser('mode'); a.add_argument('task'); a.add_argument('mode',choices=['light','full']); a.set_defaults(fn=mode)
+    a=sub.add_parser('path'); a.add_argument('task'); a.set_defaults(fn=path)
+    a=sub.add_parser('scratch'); a.add_argument('task'); a.set_defaults(fn=scratch)
     a=sub.add_parser('recovery-attempt'); a.add_argument('task'); a.add_argument('role',choices=['developer','tester']); a.set_defaults(fn=attempt)
     a=sub.add_parser('recovered'); a.add_argument('task'); a.add_argument('role',choices=['developer','tester']); a.set_defaults(fn=recovered)
     a=sub.add_parser('session'); a.add_argument('task'); a.add_argument('role',choices=['developer','tester']); a.add_argument('terminal'); a.set_defaults(fn=session)
