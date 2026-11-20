@@ -1,34 +1,60 @@
-# MyAgenticWorkflow — V1 starter
+# MyAgenticWorkflow — V1.1
 
-A deployable project scaffold for **Herdr App / herdr-core (`hc`) + Claude Code**. It includes role prompts, a `/task` command, a durable task registry, a guarded local-commit helper, and a setup script. No PR workflows.
+Claude Code + Herdr App / herdr-core (`hc`) workflow scaffold. Captain coordinates; **Developer always implements** in both Light and Full modes. Full mode adds independent Tester validation. PR workflows remain deferred.
 
 ## Requirements
-- Python 3.9+, Git, Claude Code (`claude`), Herdr App / herdr-core (`hc`), and a repo you control.
-- `hc --skill` and `hc run --help` should work on your machine.
+Python 3.9+, Git, Claude Code (`claude`), Herdr App / herdr-core (`hc`). Verify `hc --skill` on your machine.
 
-## Install into your project
+## Install / upgrade
+
+For a fresh repository:
 
 ```bash
-bash bin/install.sh /absolute/path/to/your/git/repo
-cd /absolute/path/to/your/git/repo
-# Fill context.md, coding-guidelines.md and git-guidelines.md
+bash bin/install.sh /absolute/path/to/repo
+```
+
+For an existing v1 installation:
+
+```bash
+bash bin/install.sh /absolute/path/to/repo --upgrade
+```
+
+**Upgrade backs up replaced workflow files** with `.bak-...` suffixes; it preserves your project context documents, existing task files, and `.workflow/state.json`. Review custom edits to `.workflow/captain.md`, `.workflow/developer.md`, `.workflow/tester.md`, `.workflow/task-template.md`, `.claude/commands/task.md`, and `.workflow/workflow.py` before upgrading. The installer adds `/.workflow/runs/` to `.gitignore` (review this modification). It does not rename old task documents; new tasks use slugged filenames and old `task-NNN.md` files remain resolvable.
+
+Launch Captain:
+
+```bash
+cd /absolute/path/to/repo
 hc run --bg --name captain --cwd "$PWD" claude 'Read .workflow/captain.md and hc --skill. You are Captain for this project.'
 ```
 
-Open/attach the Captain terminal in Herdr App. Use `/task` inside Claude Code, or ask Captain naturally to start a task. Run `python3 .workflow/workflow.py status` to inspect the task registry.
+Automatic Captain startup on workspace creation is not yet implemented.
 
-**Important:** The install script does not register an automatic Captain startup hook in Herdr App. That hook is app/version dependent and is **not implemented here**. The command above launches Captain once; Herdr keeps its terminal running while the app closes, but a reboot or Captain process exit may require relaunch. Developer and Tester launches are automated by Captain's instructions once the runtime is active.
+## Behavior
+- On startup, Captain checks foundational project documents and existing task state; placeholders must be addressed before task planning.
+- `/task` creates DRAFT, `task-NNN` resumes, `status` and `list` inspect workflow.
+- Captain proposes **Light** (Developer + Captain review) or **Full** (Developer + Tester + Captain review) and a rough effort estimate; user explicitly approves specification and mode.
+- One document per task: `tasks/task-NNN-short-description.md`. Registry records the path. `workflow.py path task-NNN` resolves both new and legacy task names.
+- Intermediate agent reports belong in gitignored `.workflow/runs/task-NNN/`, never in `tasks/`. Captain merges durable findings into the single task file.
+- Keep tests proportional; mutation testing is optional, selective, and only assigned to one role.
+- Captain should dispatch asynchronously and return control to user, rather than blocking on long foreground `hc wait` calls. **Agent-to-idle-Captain wake-up behavior requires live verification with your Herdr version**; if unsupported, add a tested background watcher.
+- Recovery: 3 attempts per incident, then BLOCKED and wait for user. Validation: after 3 failed rounds Captain reassesses.
+- Captain reviews and commits locally using the user's Git identity, **never pushes**. The Git helper is a guard, not a security sandbox.
 
-## Lifecycle
-`DRAFT -> READY -> IMPLEMENTING -> VALIDATING -> CAPTAIN_REVIEW -> COMMITTING -> COMPLETED`, with bounded loops to implementation and BLOCKED recovery. Specification approval is by the user; Captain's final code approval triggers local commit automatically. Only one implementation task at a time.
+## Workflow CLI
 
-## Git safeguards
-`workflow.py commit` refuses an already-staged index, requires explicit paths, and uses configured Git identity. This is a convenience guard, **not a security sandbox**: Claude can still invoke raw Git. Enforce no-push with local credentials/remote restrictions if you require hard guarantees. Never grant agents remote write privileges for V1.
+```bash
+python3 .workflow/workflow.py new 'Comparison Tab Readiness'
+python3 .workflow/workflow.py path task-001
+python3 .workflow/workflow.py mode task-001 light
+python3 .workflow/workflow.py scratch task-001
+python3 .workflow/workflow.py status task-001
+```
 
-## Notes
-- The shared working directory requires stable Developer/Tester handoffs.
-- Messages are short `hc send` payloads; large reports live in files.
-- Recovery limit: 3 attempts per incident; then BLOCKED and wait for user.
-- Testing limit: 3 failed validation rounds before Captain reassessment.
-- The installed project is deliberately unconfigured for a specific repository's coding conventions.
-- No live Herdr or Claude execution has been performed by this package.
+## Tests
+
+```bash
+python3 -m unittest discover -s tests -v
+```
+
+No live Herdr/Claude integration test is bundled. The installer does not modify existing tasks or automatically migrate their names.

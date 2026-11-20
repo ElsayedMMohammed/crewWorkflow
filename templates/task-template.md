@@ -6,12 +6,15 @@ Status: DRAFT
 ## Part A — Specification (user approval required)
 ### Objective
 TBD
+### Execution mode and estimated effort
+Mode: TBD (Light: Developer + Captain review; Full: Developer + independent Tester + Captain review)
+Estimated effort: TBD (rough estimate, not a commitment)
 ### Requirements
 TBD
 ### Architecture and constraints
 TBD
 ### Acceptance criteria
-TBD
+TBD (focused on requested outcome)
 ### Blocking dependencies
 None
 ### Related context
@@ -24,7 +27,7 @@ Not yet approved.
 ## Part B — Execution (Captain-owned)
 ### Implementation summary
 Pending
-### Test plan and evidence
+### Validation evidence and remaining gaps
 Pending
 ### Decisions and challenges
 Pending
