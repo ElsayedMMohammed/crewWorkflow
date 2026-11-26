@@ -14,13 +14,15 @@ copy_file() {
   fi
   cp "$from" "$to"
 }
-for f in captain.md developer.md tester.md task-template.md; do
+for f in captain.md developer.md tester.md reviewer.md task-template.md; do
   copy_file "$src/templates/$f" "$target/.workflow/$f"
 done
 for f in context.md coding-guidelines.md git-guidelines.md to-dos.md; do
   if [[ ! -e "$target/$f" ]]; then printf '# %s\n\nFill in project-specific guidance.\n' "$f" > "$target/$f"; fi
 done
 copy_file "$src/templates/task-command.md" "$target/.claude/commands/task.md"
+copy_file "$src/templates/pr-review-command.md" "$target/.claude/commands/pr-review.md"
+copy_file "$src/templates/list-prs-command.md" "$target/.claude/commands/list-prs.md"
 copy_file "$src/bin/workflow.py" "$target/.workflow/workflow.py"
 if [[ -f "$target/.gitignore" ]]; then
   if ! grep -qxF '/.workflow/runs/' "$target/.gitignore"; then printf '\n# MyAgenticWorkflow transient agent reports\n/.workflow/runs/\n' >> "$target/.gitignore"; fi

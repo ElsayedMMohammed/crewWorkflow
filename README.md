@@ -1,9 +1,9 @@
-# MyAgenticWorkflow — V1.1
+# MyAgenticWorkflow — V1.2
 
-Claude Code + Herdr App / herdr-core (`hc`) workflow scaffold. Captain coordinates; **Developer always implements** in both Light and Full modes. Full mode adds independent Tester validation. PR workflows remain deferred.
+Claude Code + Herdr App / herdr-core (`hc`) workflow scaffold. Captain coordinates; **Developer always implements** in both Light and Full modes. Full mode adds independent Tester validation. V1.2 adds **PR listing** (`/list-prs`) and **PR review** (`/pr-review #N`) through a Reviewer agent.
 
 ## Requirements
-Python 3.9+, Git, Claude Code (`claude`), Herdr App / herdr-core (`hc`). Verify `hc --skill` on your machine.
+Python 3.9+, Git, Claude Code (`claude`), Herdr App / herdr-core (`hc`). Verify `hc --skill` on your machine. PR features also need the GitHub CLI, authenticated (`gh auth status`), and a GitHub `origin` remote.
 
 ## Install / upgrade
 
@@ -19,7 +19,7 @@ For an existing v1 installation:
 bash bin/install.sh /absolute/path/to/repo --upgrade
 ```
 
-**Upgrade backs up replaced workflow files** with `.bak-...` suffixes; it preserves your project context documents, existing task files, and `.workflow/state.json`. Review custom edits to `.workflow/captain.md`, `.workflow/developer.md`, `.workflow/tester.md`, `.workflow/task-template.md`, `.claude/commands/task.md`, and `.workflow/workflow.py` before upgrading. The installer adds `/.workflow/runs/` to `.gitignore` (review this modification). It does not rename old task documents; new tasks use slugged filenames and old `task-NNN.md` files remain resolvable.
+**Upgrade backs up replaced workflow files** with `.bak-...` suffixes; it preserves your project context documents, existing task files, and `.workflow/state.json`. Review custom edits to `.workflow/captain.md`, `.workflow/developer.md`, `.workflow/tester.md`, `.workflow/reviewer.md`, `.workflow/task-template.md`, `.claude/commands/{task,pr-review,list-prs}.md`, and `.workflow/workflow.py` before upgrading. The installer adds `/.workflow/runs/` to `.gitignore` (review this modification). It does not rename old task documents; new tasks use slugged filenames and old `task-NNN.md` files remain resolvable.
 
 Launch Captain:
 
@@ -41,6 +41,23 @@ Automatic Captain startup on workspace creation is not yet implemented.
 - Recovery: 3 attempts per incident, then BLOCKED and wait for user. Validation: after 3 failed rounds Captain reassesses.
 - Captain reviews and commits locally using the user's Git identity, **never pushes**. The Git helper is a guard, not a security sandbox.
 
+## PR commands (ask Captain)
+- **`/list-prs`** lists open PRs in two groups: *your reviews* (by your `gh` login: review requested from you or your teams, or already reviewed by you) and *other open PRs*. Each PR gets `#N Title` and a 1–2 sentence description. Read-only.
+- **`/pr-review #N`** runs a Reviewer on that PR:
+  1. Captain runs `workflow.py review-start N`. This fetches the PR into private refs (`refs/workflow/pr/N/{head,base}`) and creates a detached worktree **outside** your repo (`~/.cache/myagenticworkflow/worktrees/...`, override with `WORKFLOW_WORKTREE_ROOT`). Your working tree and any in-flight task are not touched.
+  2. Captain launches Reviewer `rev-pr-N` in that worktree and returns control to you.
+  3. The Reviewer:
+     - reads the PR and the project context
+     - summarizes the changes in plain language
+     - runs the tests, comparing failures against the base
+     - checks that the tests are valid: meaningful assertions, not mock-only, and failing when the feature is reverted
+     - reports only major issues, each with a suggested solution (a description, not code)
+     - gives a verdict: **APPROVE / REQUEST_CHANGES / REJECT**
+  4. If something would change the verdict, such as project goals or whether the feature is wanted, the Reviewer sends **one batch of at most 5 questions**, plus at most one follow-up round (enforced by the CLI). Captain answers from the project docs or asks you in a single message.
+  5. Captain spot-checks the report, records the verdict, and presents it to you. Reports stay in `.workflow/runs/pr-N/`.
+  6. Nothing is posted to GitHub unless you explicitly ask. Captain never merges or closes PRs.
+  7. `/pr-review #N` again after new pushes starts a fresh round. `/pr-review cleanup #N` removes the worktree and refs.
+
 ## Workflow CLI
 
 ```bash
@@ -49,6 +66,15 @@ python3 .workflow/workflow.py path task-001
 python3 .workflow/workflow.py mode task-001 light
 python3 .workflow/workflow.py scratch task-001
 python3 .workflow/workflow.py status task-001
+
+# PRs
+python3 .workflow/workflow.py prs [--json]
+python3 .workflow/workflow.py review-start '#12'        # worktree + scratch + registry
+python3 .workflow/workflow.py review-questions 12       # max 2 rounds per review round
+python3 .workflow/workflow.py review-answered 12
+python3 .workflow/workflow.py review-verdict 12 REQUEST_CHANGES --note 'race in cache eviction'
+python3 .workflow/workflow.py review-status [12]
+python3 .workflow/workflow.py review-cleanup 12 [--purge]
 ```
 
 ## Tests
@@ -57,4 +83,4 @@ python3 .workflow/workflow.py status task-001
 python3 -m unittest discover -s tests -v
 ```
 
-No live Herdr/Claude integration test is bundled. The installer does not modify existing tasks or automatically migrate their names.
+PR tests use a fake `gh` and a local bare remote; no network is needed. No live Herdr/Claude/GitHub integration test is bundled. The installer does not modify existing tasks or automatically migrate their names.
