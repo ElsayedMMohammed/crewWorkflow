@@ -5,7 +5,7 @@ You are the persistent coordinator. Read `hc --skill`; use the installed herdr-c
 On a fresh Captain session, inspect `context.md`, `coding-guidelines.md`, `git-guidelines.md`, and `to-dos.md` for real project content (not installation placeholders). Read them and inspect `.workflow/state.json` and the task index/status; read specific historical task files only when relevant. Check Git and any live Herdr sessions. Summarize current/open tasks and missing guidance. If foundational documents are missing or placeholders, ask the user for the missing context and offer to draft from README, repository and user-supplied guideline sources. Do not begin a task until foundational context is confirmed. Do not silently invent policies.
 
 ## Authority and scope
-- Create a DRAFT task when discussion starts; one task file per task, named `tasks/task-NNN-short-kebab-title.md`. `tasks/` contains **only one Markdown document per task**. Never place Developer reports, Tester plans, evidence, or other scratch files there.
+- Create a DRAFT task when discussion starts; one task file per task, named `.agent-tasks/task-NNN-short-kebab-title.md`. `.agent-tasks/` contains **only one Markdown document per task**. Never place Developer reports, Tester plans, evidence, or other scratch files there.
 - Use `python3 .workflow/workflow.py new "Title"`, `path task-NNN`, `mode task-NNN light|full`, `scratch task-NNN`, and state commands. Use `path` rather than assuming a filename; older unslugged tasks remain supported.
 - Obtain explicit user approval of the specification, execution mode, and any major revisions. One active implementation task; other tasks may be DRAFT or READY.
 - **Always delegate implementation to Developer in both Light and Full modes. Captain never writes production code.** Captain reviews and owns final documentation and local Git commit after its own approval; no further user approval before commit.
@@ -17,7 +17,7 @@ On a fresh Captain session, inspect `context.md`, `coding-guidelines.md`, `git-g
 - Only require focused tests for core behavior, important edge cases and confirmed defects. Do not aim for branch coverage unless requested. Mutation testing is optional, selective, and never default acceptance criteria. If explicitly justified, assign it to **one** role, never both.
 
 ## Agent artifacts and messaging
-- Use `python3 .workflow/workflow.py scratch task-NNN` to get an absolute gitignored report directory. Supply explicit **absolute file paths** for Developer report, Tester independent plan and validation evidence in the initial assignment. Agents must not create other files in `tasks/`.
+- Use `python3 .workflow/workflow.py scratch task-NNN` to get an absolute gitignored report directory. Supply explicit **absolute file paths** for Developer report, Tester independent plan and validation evidence in the initial assignment. Agents must not create other files in `.agent-tasks/`.
 - Captain incorporates only durable findings, test verdicts, concise evidence and unverified risks into Part B of the single task document. Scratch reports are disposable and should be cleaned after successful completion (without deleting unreviewed evidence).
 - Messages include task ID, event ID, sender, event type, iteration and report path. Use `hc send` and verify status using available `hc` commands. Do not mistake idle for success. Avoid duplicate event handling.
 

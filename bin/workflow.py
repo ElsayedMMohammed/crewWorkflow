@@ -3,7 +3,9 @@
 import argparse, datetime, hashlib, json, os, pathlib, re, subprocess, sys
 ROOT = pathlib.Path.cwd()
 STATE = ROOT / '.workflow' / 'state.json'
-TASKS = ROOT / 'tasks'
+TASKS_DIRNAME = '.agent-tasks'
+TASKS = ROOT / TASKS_DIRNAME
+OLD_TASKS = ROOT / 'tasks'  # pre-V1.3 location; migrated by `init`
 STATUSES = {'DRAFT','READY','IMPLEMENTING','VALIDATING','CAPTAIN_REVIEW','COMMITTING','COMPLETED','BLOCKED'}
 ALLOWED = {'DRAFT':{'READY'}, 'READY':{'IMPLEMENTING','DRAFT'}, 'IMPLEMENTING':{'VALIDATING','CAPTAIN_REVIEW','BLOCKED'}, 'VALIDATING':{'IMPLEMENTING','CAPTAIN_REVIEW','BLOCKED'}, 'CAPTAIN_REVIEW':{'IMPLEMENTING','COMMITTING','BLOCKED'}, 'COMMITTING':{'COMPLETED','BLOCKED'}, 'BLOCKED':{'IMPLEMENTING','VALIDATING','CAPTAIN_REVIEW'}, 'COMPLETED':set()}
 REVIEW_STATUSES = {'REVIEWING','AWAITING_ANSWERS','DONE','CLOSED'}
@@ -25,21 +27,44 @@ def taskfile(t, state=None):
     recorded = entry.get('file')
     if recorded:
         path = ROOT / recorded
-        if path.resolve().parent != TASKS.resolve():
+        if path.resolve().parent not in (TASKS.resolve(), OLD_TASKS.resolve()):
             sys.exit('Invalid task path in registry')
+        if path.parent.resolve() == OLD_TASKS.resolve() and not path.exists() and (TASKS / path.name).exists():
+            return TASKS / path.name  # moved but registry not yet updated
         return path
-    legacy = TASKS / (t + '.md')
-    if legacy.exists(): return legacy
-    matches = sorted(TASKS.glob(t + '-*.md'))
-    if len(matches) == 1: return matches[0]
-    if len(matches) > 1: sys.exit('Ambiguous task files: ' + t)
-    return legacy
+    for folder in (TASKS, OLD_TASKS):
+        legacy = folder / (t + '.md')
+        if legacy.exists(): return legacy
+        matches = sorted(folder.glob(t + '-*.md'))
+        if len(matches) == 1: return matches[0]
+        if len(matches) > 1: sys.exit('Ambiguous task files: ' + t)
+    return TASKS / (t + '.md')
+
+def migrate_tasks_dir(s):
+    """Move workflow task documents from the old `tasks/` folder into `.agent-tasks/`.
+    Only registry-recorded files and `task-NNN*.md` files move; anything else in `tasks/` is left alone."""
+    if not OLD_TASKS.is_dir(): return []
+    recorded = {pathlib.Path(d['file']).name for d in s['tasks'].values() if d.get('file','').startswith('tasks/')}
+    moved = []
+    for f in sorted(OLD_TASKS.iterdir()):
+        if f.is_file() and (f.name in recorded or re.fullmatch(r'task-\d+(-.*)?\.md', f.name)):
+            dest = TASKS / f.name
+            if dest.exists(): sys.exit(f'Cannot migrate {f}: {dest} already exists')
+            TASKS.mkdir(exist_ok=True); f.rename(dest); moved.append(f.name)
+    for d in s['tasks'].values():
+        if d.get('file','').startswith('tasks/') and (TASKS / pathlib.Path(d['file']).name).exists():
+            d['file'] = f'{TASKS_DIRNAME}/{pathlib.Path(d["file"]).name}'
+    if not any(OLD_TASKS.iterdir()): OLD_TASKS.rmdir()
+    return moved
 
 def init(args):
-    TASKS.mkdir(exist_ok=True); STATE.parent.mkdir(exist_ok=True); save(load()); print('Initialized workflow registry')
+    TASKS.mkdir(exist_ok=True); STATE.parent.mkdir(exist_ok=True); s=load()
+    moved = migrate_tasks_dir(s); save(s)
+    if moved: print(f'Migrated {len(moved)} task file(s) from tasks/ to {TASKS_DIRNAME}/ (not staged; commit the move yourself): ' + ', '.join(moved))
+    print('Initialized workflow registry')
 def new(args):
     s=load(); n=max([int(k.split('-')[1]) for k in s['tasks'] if re.fullmatch(r'task-\d+',k)] or [0])+1
-    t=f'task-{n:03d}'; filename=f'{t}-{slugify(args.title)}.md'; s['tasks'][t]={'file':f'tasks/{filename}','mode':None,'title':args.title,'status':'DRAFT','dependencies':[],'related':[],'attempts':{'developer':0,'tester':0},'validation_round':0,'sessions':{},'events':[]}
+    t=f'task-{n:03d}'; filename=f'{t}-{slugify(args.title)}.md'; s['tasks'][t]={'file':f'{TASKS_DIRNAME}/{filename}','mode':None,'title':args.title,'status':'DRAFT','dependencies':[],'related':[],'attempts':{'developer':0,'tester':0},'validation_round':0,'sessions':{},'events':[]}
     TASKS.mkdir(exist_ok=True); template=(ROOT/'.workflow'/'task-template.md').read_text()
     taskfile(t,s).write_text(template.replace('{{TASK_ID}}',t).replace('{{TITLE}}',args.title).replace('{{DATE}}',datetime.date.today().isoformat()))
     save(s); print(t)

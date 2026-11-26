@@ -36,9 +36,10 @@ class V11Tests(WorkflowTests):
             self.run_cmd(d,'new','Comparison Tab Readiness!')
             path=pathlib.Path(self.run_cmd(d,'path','task-001').stdout.strip())
             self.assertEqual(path.name,'task-001-comparison-tab-readiness.md')
+            self.assertEqual(path.parent.name,'.agent-tasks')
             self.assertTrue(path.exists())
             state=json.loads((pathlib.Path(d)/'.workflow/state.json').read_text())
-            self.assertEqual(state['tasks']['task-001']['file'],'tasks/task-001-comparison-tab-readiness.md')
+            self.assertEqual(state['tasks']['task-001']['file'],'.agent-tasks/task-001-comparison-tab-readiness.md')
             self.run_cmd(d,'mode','task-001','light')
             self.run_cmd(d,'transition','task-001','READY')
             self.run_cmd(d,'transition','task-001','IMPLEMENTING','--approved')
@@ -54,12 +55,40 @@ class V11Tests(WorkflowTests):
         with tempfile.TemporaryDirectory() as d:
             self.fixture(d); self.run_cmd(d,'new','Old task')
             root=pathlib.Path(d)
-            old=root/'tasks/task-001.md'
-            (root/'tasks/task-001-old-task.md').rename(old)
+            old=root/'.agent-tasks/task-001.md'
+            (root/'.agent-tasks/task-001-old-task.md').rename(old)
             state=json.loads((root/'.workflow/state.json').read_text())
             del state['tasks']['task-001']['file']
             (root/'.workflow/state.json').write_text(json.dumps(state))
             self.assertEqual(pathlib.Path(self.run_cmd(d,'path','task-001').stdout.strip()),old)
+    def test_migrates_old_tasks_folder(self):
+        import json
+        with tempfile.TemporaryDirectory() as d:
+            self.fixture(d); root=pathlib.Path(d)
+            # simulate a pre-V1.3 install: registry points at tasks/, files live there, plus an unrelated project file
+            self.run_cmd(d,'new','Old layout')
+            (root/'tasks').mkdir()
+            (root/'.agent-tasks/task-001-old-layout.md').rename(root/'tasks/task-001-old-layout.md')
+            (root/'tasks/task-002.md').write_text('unregistered legacy task')
+            (root/'tasks/roadmap.md').write_text('project-owned, not a workflow task')
+            state=json.loads((root/'.workflow/state.json').read_text())
+            state['tasks']['task-001']['file']='tasks/task-001-old-layout.md'
+            (root/'.workflow/state.json').write_text(json.dumps(state))
+            self.assertIn('Migrated 2 task file(s)', self.run_cmd(d,'init').stdout)
+            state=json.loads((root/'.workflow/state.json').read_text())
+            self.assertEqual(state['tasks']['task-001']['file'],'.agent-tasks/task-001-old-layout.md')
+            self.assertTrue((root/'.agent-tasks/task-001-old-layout.md').exists())
+            self.assertTrue((root/'.agent-tasks/task-002.md').exists())
+            self.assertTrue((root/'tasks/roadmap.md').exists())  # untouched
+            self.assertEqual(pathlib.Path(self.run_cmd(d,'path','task-001').stdout.strip()).parent.name,'.agent-tasks')
+            self.assertNotIn('Migrated', self.run_cmd(d,'init').stdout)  # idempotent
+    def test_old_folder_removed_when_empty(self):
+        with tempfile.TemporaryDirectory() as d:
+            self.fixture(d); root=pathlib.Path(d)
+            (root/'tasks').mkdir(); (root/'tasks/task-005.md').write_text('x')
+            self.run_cmd(d,'init')
+            self.assertFalse((root/'tasks').exists())
+            self.assertTrue((root/'.agent-tasks/task-005.md').exists())
     def test_scratch(self):
         with tempfile.TemporaryDirectory() as d:
             self.fixture(d); self.run_cmd(d,'new','Report')

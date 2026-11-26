@@ -4,7 +4,7 @@ src="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 target="${1:-$PWD}"
 upgrade="${2:-}"
 if [[ "$upgrade" != "" && "$upgrade" != "--upgrade" ]]; then echo "Usage: install.sh REPO [--upgrade]" >&2; exit 2; fi
-mkdir -p "$target/.workflow" "$target/.workflow/runs" "$target/.claude/commands" "$target/tasks"
+mkdir -p "$target/.workflow" "$target/.workflow/runs" "$target/.claude/commands" "$target/.agent-tasks"
 copy_file() {
   local from="$1" to="$2"
   if [[ -e "$to" ]]; then

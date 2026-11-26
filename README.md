@@ -1,4 +1,4 @@
-# MyAgenticWorkflow — V1.2
+# MyAgenticWorkflow — V1.3
 
 Claude Code + Herdr App / herdr-core (`hc`) workflow scaffold. Captain coordinates; **Developer always implements** in both Light and Full modes. Full mode adds independent Tester validation. V1.2 adds **PR listing** (`/list-prs`) and **PR review** (`/pr-review #N`) through a Reviewer agent.
 
@@ -19,7 +19,7 @@ For an existing v1 installation:
 bash bin/install.sh /absolute/path/to/repo --upgrade
 ```
 
-**Upgrade backs up replaced workflow files** with `.bak-...` suffixes; it preserves your project context documents, existing task files, and `.workflow/state.json`. Review custom edits to `.workflow/captain.md`, `.workflow/developer.md`, `.workflow/tester.md`, `.workflow/reviewer.md`, `.workflow/task-template.md`, `.claude/commands/{task,pr-review,list-prs}.md`, and `.workflow/workflow.py` before upgrading. The installer adds `/.workflow/runs/` to `.gitignore` (review this modification). It does not rename old task documents; new tasks use slugged filenames and old `task-NNN.md` files remain resolvable.
+**Upgrade backs up replaced workflow files** with `.bak-...` suffixes; it preserves your project context documents, existing task files, and `.workflow/state.json`. Review custom edits to `.workflow/captain.md`, `.workflow/developer.md`, `.workflow/tester.md`, `.workflow/reviewer.md`, `.workflow/task-template.md`, `.claude/commands/{task,pr-review,list-prs}.md`, and `.workflow/workflow.py` before upgrading. The installer adds `/.workflow/runs/` to `.gitignore` (review this modification). Since V1.3, task documents live in `.agent-tasks/` (formerly `tasks/`). The upgrade **moves** existing workflow task files (`task-NNN*.md` and registry-recorded ones) from `tasks/` into `.agent-tasks/` and updates the registry. Other files in `tasks/` are left untouched. The move is not staged, so commit it yourself. Task file names are not changed; old unslugged `task-NNN.md` files remain resolvable.
 
 Launch Captain:
 
@@ -34,8 +34,8 @@ Automatic Captain startup on workspace creation is not yet implemented.
 - On startup, Captain checks foundational project documents and existing task state; placeholders must be addressed before task planning.
 - `/task` creates DRAFT, `task-NNN` resumes, `status` and `list` inspect workflow.
 - Captain proposes **Light** (Developer + Captain review) or **Full** (Developer + Tester + Captain review) and a rough effort estimate; user explicitly approves specification and mode.
-- One document per task: `tasks/task-NNN-short-description.md`. Registry records the path. `workflow.py path task-NNN` resolves both new and legacy task names.
-- Intermediate agent reports belong in gitignored `.workflow/runs/task-NNN/`, never in `tasks/`. Captain merges durable findings into the single task file.
+- One document per task: `.agent-tasks/task-NNN-short-description.md`. Registry records the path. `workflow.py path task-NNN` resolves both new and legacy task names.
+- Intermediate agent reports belong in gitignored `.workflow/runs/task-NNN/`, never in `.agent-tasks/`. Captain merges durable findings into the single task file.
 - Keep tests proportional; mutation testing is optional, selective, and only assigned to one role.
 - Captain should dispatch asynchronously and return control to user, rather than blocking on long foreground `hc wait` calls. **Agent-to-idle-Captain wake-up behavior requires live verification with your Herdr version**; if unsupported, add a tested background watcher.
 - Recovery: 3 attempts per incident, then BLOCKED and wait for user. Validation: after 3 failed rounds Captain reassesses.
