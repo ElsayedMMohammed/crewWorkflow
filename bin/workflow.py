@@ -1,13 +1,18 @@
 #!/usr/bin/env python3
-"""Small, dependency-free task registry and safe Git commit helper."""
-import argparse, datetime, json, os, pathlib, re, subprocess, sys
+"""Small, dependency-free task registry, PR review registry and safe Git commit helper."""
+import argparse, datetime, hashlib, json, os, pathlib, re, subprocess, sys
 ROOT = pathlib.Path.cwd()
 STATE = ROOT / '.workflow' / 'state.json'
 TASKS = ROOT / 'tasks'
 STATUSES = {'DRAFT','READY','IMPLEMENTING','VALIDATING','CAPTAIN_REVIEW','COMMITTING','COMPLETED','BLOCKED'}
 ALLOWED = {'DRAFT':{'READY'}, 'READY':{'IMPLEMENTING','DRAFT'}, 'IMPLEMENTING':{'VALIDATING','CAPTAIN_REVIEW','BLOCKED'}, 'VALIDATING':{'IMPLEMENTING','CAPTAIN_REVIEW','BLOCKED'}, 'CAPTAIN_REVIEW':{'IMPLEMENTING','COMMITTING','BLOCKED'}, 'COMMITTING':{'COMPLETED','BLOCKED'}, 'BLOCKED':{'IMPLEMENTING','VALIDATING','CAPTAIN_REVIEW'}, 'COMPLETED':set()}
+REVIEW_STATUSES = {'REVIEWING','AWAITING_ANSWERS','DONE','CLOSED'}
+VERDICTS = ('APPROVE','REQUEST_CHANGES','REJECT')
+MAX_QUESTION_ROUNDS = 2
 def load():
-    return json.loads(STATE.read_text()) if STATE.exists() else {'tasks':{},'active_task':None}
+    s = json.loads(STATE.read_text()) if STATE.exists() else {'tasks':{},'active_task':None}
+    s.setdefault('reviews', {})
+    return s
 def save(s):
     STATE.parent.mkdir(parents=True,exist_ok=True)
     tmp=STATE.with_suffix('.tmp'); tmp.write_text(json.dumps(s,indent=2)+'\n'); tmp.replace(STATE)
@@ -42,7 +47,7 @@ def status(args):
     s=load()
     if args.task:
         print(json.dumps(s['tasks'].get(args.task,{}),indent=2)); return
-    print(json.dumps({'active_task':s['active_task'],'tasks':{k:v['status'] for k,v in s['tasks'].items()}},indent=2))
+    print(json.dumps({'active_task':s['active_task'],'tasks':{k:v['status'] for k,v in s['tasks'].items()},'reviews':{k:{'status':v['status'],'verdict':v.get('verdict')} for k,v in s['reviews'].items()}},indent=2))
 def transition(args):
     s=load(); t=args.task; d=s['tasks'].get(t)
     if not d: sys.exit('Unknown task')
@@ -103,6 +108,130 @@ def commit(args):
         print(git('rev-parse','HEAD'))
     except subprocess.CalledProcessError as exc:
         sys.exit(f'Git failed: {exc.stderr.strip()}')
+# ---------------------------------------------------------------- PR reviews
+def now(): return datetime.datetime.now(datetime.timezone.utc).isoformat()
+def gh_bin(): return os.environ.get('WORKFLOW_GH','gh')
+def run(cmd, cwd=None):
+    try:
+        return subprocess.run(cmd,cwd=cwd,text=True,capture_output=True,check=True).stdout.strip()
+    except FileNotFoundError:
+        sys.exit(f'Command not found: {cmd[0]}')
+    except subprocess.CalledProcessError as exc:
+        sys.exit(f'{" ".join(cmd[:3])} failed: {exc.stderr.strip()}')
+def gh_json(*a): return json.loads(run([gh_bin(),*a]) or 'null')
+def git(*a, cwd=None): return run(['git',*a],cwd=cwd)
+def parse_pr(value):
+    m = re.fullmatch(r'(?:#|pr-|PR-)?(\d+)', value.strip()) or re.search(r'/pull/(\d+)', value)
+    if not m: sys.exit(f'Not a PR number: {value!r} (use 12, #12, pr-12 or a PR URL)')
+    return int(m.group(1))
+def worktree_path(n):
+    base = os.environ.get('WORKFLOW_WORKTREE_ROOT') or str(pathlib.Path.home()/'.cache'/'myagenticworkflow'/'worktrees')
+    tag = hashlib.sha1(str(ROOT.resolve()).encode()).hexdigest()[:8]
+    return pathlib.Path(base)/f'{ROOT.resolve().name}-{tag}'/f'pr-{n}'
+def review_entry(s, n):
+    r = s['reviews'].get(f'pr-{n}')
+    if not r: sys.exit(f'Unknown review: pr-{n} (run review-start first)')
+    return r
+def log(r, event, note=''): r['events'].append({'at':now(),'event':event,'note':note})
+
+def categorize(prs, login, requested_numbers=(), reviewed_numbers=()):
+    """Split PRs into those involving the user's review (requested directly, via a team, or already reviewed) and others."""
+    me = (login or '').lower(); via_search = set(requested_numbers); reviewed_set = set(reviewed_numbers); mine, others = [], []
+    for pr in prs:
+        assignees = [a.get('login','') for a in pr.get('assignees') or []]
+        direct = me in [x.get('login','').lower() for x in pr.get('reviewRequests') or [] if x.get('login')]
+        requested = direct or pr['number'] in via_search
+        reviewed = pr['number'] in reviewed_set
+        body = re.sub(r'<!--.*?-->', '', pr.get('body') or '', flags=re.S)
+        body = ' '.join(body.split())
+        item = {'number':pr['number'],'title':pr.get('title',''),'url':pr.get('url',''),
+                'author':(pr.get('author') or {}).get('login',''),'assignees':assignees,
+                'draft':bool(pr.get('isDraft')),'review_requested_from_me':requested,
+                'requested_via_team':requested and not direct,
+                'reviewed_by_me':reviewed,
+                'assigned_to_me':me in [a.lower() for a in assignees],
+                'authored_by_me':(pr.get('author') or {}).get('login','').lower()==me,
+                'base':pr.get('baseRefName',''),'head':pr.get('headRefName',''),
+                'body_excerpt':body[:400]+('...' if len(body)>400 else '')}
+        (mine if requested or reviewed else others).append(item)
+    return {'login':login,'my_reviews':mine,'others':others}
+def prs(args):
+    login = run([gh_bin(),'api','user','--jq','.login'])
+    data = gh_json('pr','list','--state','open','--limit',str(args.limit),'--json',
+                   'number,title,body,url,author,assignees,isDraft,reviewRequests,baseRefName,headRefName')
+    # GitHub search also covers review requests made to teams the user belongs to.
+    search = lambda q: [x['number'] for x in gh_json('pr','list','--state','open','--limit',str(args.limit),'--search',q,'--json','number') or []]
+    out = categorize(data or [], login, search('review-requested:@me'), search('reviewed-by:@me'))
+    if args.json: print(json.dumps(out,indent=2)); return
+    for label, key in ((f'Your reviews (@{login}, requested or already reviewed)','my_reviews'),('Other open PRs','others')):
+        print(f'## {label}: {len(out[key])}')
+        for p in out[key]:
+            status = 'review requested' if p['review_requested_from_me'] else ''
+            if p['reviewed_by_me']: status = 'reviewed, re-requested' if status else 'already reviewed'
+            tags = [t for t,on in ((status,bool(status)),('draft',p['draft']),('via team',p['requested_via_team']),('assigned to you',p['assigned_to_me']),('authored by you',p['authored_by_me'])) if on]
+            print(f"#{p['number']} {p['title']}  [by @{p['author']}{'; ' + ', '.join(tags) if tags else ''}]")
+            print(f"    {p['body_excerpt'] or '(no description)'}")
+        print()
+
+def review_start(args):
+    n = parse_pr(args.pr); key = f'pr-{n}'
+    meta = gh_json('pr','view',str(n),'--json','number,title,url,author,state,isDraft,baseRefName,headRefName,headRefOid,isCrossRepository')
+    if meta.get('state','OPEN') != 'OPEN' and not args.force:
+        sys.exit(f"PR #{n} is {meta.get('state')}; pass --force to review anyway")
+    s = load(); r = s['reviews'].get(key)
+    if r and r['status'] in ('REVIEWING','AWAITING_ANSWERS') and not args.force:
+        sys.exit(f'Review {key} is already {r["status"]}; pass --force to restart it')
+    head_ref, base_ref = f'refs/workflow/pr/{n}/head', f'refs/workflow/pr/{n}/base'
+    git('fetch','--no-tags',args.remote,f'+refs/pull/{n}/head:{head_ref}',f"+refs/heads/{meta['baseRefName']}:{base_ref}")
+    head_sha = git('rev-parse',head_ref)
+    wt = worktree_path(n); git('worktree','prune')
+    if (wt/'.git').exists():
+        git('checkout','--detach','--force',head_ref,cwd=wt); git('clean','-fd',cwd=wt)
+    else:
+        wt.parent.mkdir(parents=True,exist_ok=True); git('worktree','add','--detach',str(wt),head_ref)
+    scratch = ROOT/'.workflow'/'runs'/key; scratch.mkdir(parents=True,exist_ok=True)
+    rnd = (r or {}).get('round',0)+1
+    r = r or {'pr':n,'events':[],'session':None}
+    r.update({'title':meta.get('title',''),'url':meta.get('url',''),'author':(meta.get('author') or {}).get('login',''),
+              'base':meta['baseRefName'],'head':meta.get('headRefName',''),'head_sha':head_sha,'base_ref':base_ref,'head_ref':head_ref,
+              'worktree':str(wt),'scratch':str(scratch.resolve()),'report':str((scratch/f'review-r{rnd}.md').resolve()),
+              'questions':str((scratch/f'questions-r{rnd}.md').resolve()),'status':'REVIEWING','verdict':None,'question_rounds':0,'round':rnd})
+    log(r,'START',f'round {rnd} at {head_sha[:12]}')
+    s['reviews'][key] = r; save(s)
+    print(json.dumps({k:r[k] for k in ('pr','title','url','author','base','head','head_sha','base_ref','head_ref','worktree','scratch','report','questions','round')},indent=2))
+def review_questions(args):
+    s = load(); n = parse_pr(args.pr); r = review_entry(s,n)
+    if r['status'] != 'REVIEWING': sys.exit(f"Review pr-{n} is {r['status']}, not REVIEWING")
+    if r['question_rounds'] >= MAX_QUESTION_ROUNDS:
+        sys.exit('Question budget exhausted: tell Reviewer to proceed with explicitly stated assumptions')
+    r['question_rounds'] += 1; r['status'] = 'AWAITING_ANSWERS'; log(r,'QUESTIONS',f"round {r['question_rounds']}/{MAX_QUESTION_ROUNDS}")
+    save(s); print(f"pr-{n}: questions round {r['question_rounds']}/{MAX_QUESTION_ROUNDS}")
+def review_answered(args):
+    s = load(); n = parse_pr(args.pr); r = review_entry(s,n)
+    if r['status'] != 'AWAITING_ANSWERS': sys.exit(f"Review pr-{n} is {r['status']}, not AWAITING_ANSWERS")
+    r['status'] = 'REVIEWING'; log(r,'ANSWERED',args.note or ''); save(s); print(f'pr-{n}: answers relayed, REVIEWING')
+def review_verdict(args):
+    s = load(); n = parse_pr(args.pr); r = review_entry(s,n)
+    if r['status'] not in ('REVIEWING','DONE'): sys.exit(f"Review pr-{n} is {r['status']}; cannot record a verdict")
+    r['status'] = 'DONE'; r['verdict'] = args.verdict; log(r,'VERDICT',args.verdict+(f': {args.note}' if args.note else ''))
+    save(s); print(f'pr-{n}: {args.verdict}')
+def review_session(args):
+    s = load(); r = review_entry(s,parse_pr(args.pr)); r['session'] = args.terminal; save(s); print('Session recorded')
+def review_status(args):
+    s = load()
+    if args.pr: print(json.dumps(review_entry(s,parse_pr(args.pr)),indent=2)); return
+    print(json.dumps({k:{'title':v.get('title'),'status':v['status'],'verdict':v.get('verdict'),'round':v.get('round')} for k,v in s['reviews'].items()},indent=2))
+def review_cleanup(args):
+    s = load(); n = parse_pr(args.pr); r = review_entry(s,n)
+    wt = pathlib.Path(r['worktree'])
+    if wt.exists(): git('worktree','remove','--force',str(wt))
+    git('worktree','prune')
+    for ref in (r['head_ref'],r['base_ref']):
+        subprocess.run(['git','update-ref','-d',ref],capture_output=True)
+    r['status'] = 'CLOSED'; log(r,'CLEANUP','worktree and refs removed; scratch reports kept' if not args.purge else 'worktree, refs and scratch removed')
+    if args.purge:
+        import shutil; shutil.rmtree(r['scratch'],ignore_errors=True)
+    save(s); print(f'pr-{n}: cleaned up')
 def main():
     p=argparse.ArgumentParser(); sub=p.add_subparsers(dest='cmd',required=True)
     sub.add_parser('init').set_defaults(fn=init)
@@ -117,5 +246,13 @@ def main():
     a=sub.add_parser('session'); a.add_argument('task'); a.add_argument('role',choices=['developer','tester']); a.add_argument('terminal'); a.set_defaults(fn=session)
     a=sub.add_parser('event'); a.add_argument('task'); a.add_argument('type'); a.add_argument('sender'); a.add_argument('id'); a.add_argument('--artifact',default=''); a.set_defaults(fn=event)
     a=sub.add_parser('commit'); a.add_argument('task'); a.add_argument('--message',required=True); a.add_argument('--body',required=True); a.add_argument('files',nargs='+'); a.set_defaults(fn=commit)
+    a=sub.add_parser('prs',help='list open PRs grouped by assignment to the gh user'); a.add_argument('--json',action='store_true'); a.add_argument('--limit',type=int,default=100); a.set_defaults(fn=prs)
+    a=sub.add_parser('review-start'); a.add_argument('pr'); a.add_argument('--remote',default='origin'); a.add_argument('--force',action='store_true'); a.set_defaults(fn=review_start)
+    a=sub.add_parser('review-questions'); a.add_argument('pr'); a.set_defaults(fn=review_questions)
+    a=sub.add_parser('review-answered'); a.add_argument('pr'); a.add_argument('--note'); a.set_defaults(fn=review_answered)
+    a=sub.add_parser('review-verdict'); a.add_argument('pr'); a.add_argument('verdict',choices=VERDICTS); a.add_argument('--note'); a.set_defaults(fn=review_verdict)
+    a=sub.add_parser('review-session'); a.add_argument('pr'); a.add_argument('terminal'); a.set_defaults(fn=review_session)
+    a=sub.add_parser('review-status'); a.add_argument('pr',nargs='?'); a.set_defaults(fn=review_status)
+    a=sub.add_parser('review-cleanup'); a.add_argument('pr'); a.add_argument('--purge',action='store_true',help='also delete scratch reports'); a.set_defaults(fn=review_cleanup)
     args=p.parse_args(); args.fn(args)
 if __name__=='__main__': main()
